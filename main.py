@@ -272,6 +272,23 @@ def forecast_case(case: dict, name: str) -> dict:
             # than twice the observed movement, and never 100.
             span = max(ry) - min(ry)
             cap = min(99.0, max(ry) * 1.02 + 2.0 * span)
+            # Rare trophies: the percent-space cap above is far too tight
+            # in logit terms. A rate of 0.8% capped at ~1.4% cannot rise
+            # by even one logit unit, yet a late-unlocking rare trophy can
+            # rise several logit units over a multi-day horizon (players
+            # reach it late, after the observed window). Give low-rate
+            # trophies a logit-space floor on the cap so the fitted
+            # asymptote is allowed a meaningful rise: twice the observed
+            # logit movement plus a horizon allowance. This only raises
+            # the ceiling the grid search may choose; the fit still picks
+            # the asymptote that best fits the history.
+            if max(ry) < 5.0:
+                lmax = logit_of(max(ry))
+                lmin = logit_of(min(ry))
+                lspan = max(0.25, lmax - lmin)
+                margin = 2.0 * lspan + 0.5 * math.sqrt(horizon_days)
+                cap_logit = min(logit_of(99.0), lmax + margin)
+                cap = max(cap, pct_of_logit(cap_logit))
             rate_fit = fit_saturating(rx, ry, a_cap=cap)
             r_target = predict(rate_fit, target_x) if rate_fit else None
             if r_target is None:
@@ -279,9 +296,17 @@ def forecast_case(case: dict, name: str) -> dict:
                 sigma_model = 1.0
             else:
                 # Damp the extrapolation toward the last observed rate.
+                # Rare trophies: the last observed rate is a poor anchor
+                # (the rate is about to rise as players reach the trophy,
+                # so the tiny last rate drags the forecast down). Give the
+                # fitted curve more weight for low-rate trophies by
+                # halving the effective reach in the damping.
+                trophy_damp = damp
+                if max(ry) < 5.0:
+                    trophy_damp = x_span / (x_span + reach * 0.5)
                 blended = (
-                    damp * logit_of(r_target)
-                    + (1.0 - damp) * logit_of(last_rate)
+                    trophy_damp * logit_of(r_target)
+                    + (1.0 - trophy_damp) * logit_of(last_rate)
                 )
                 median = clamp_pct(pct_of_logit(blended))
                 # Residual scatter of the fitted rate against the observed
